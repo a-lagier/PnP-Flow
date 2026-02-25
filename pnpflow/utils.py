@@ -636,9 +636,12 @@ def compute_average_psnr(args):
                 args.save_path_ip, f'psnr_{word}_batch{batch}.txt')
 
             with open(filename, 'r') as f:
-                for line in f:
+                # Only read the last experiment values
+                for line in list(f)[::-1]:
                     iteration, psnr = map(float, line.strip().split())
                     psnr_by_iteration[int(iteration)].append(psnr)
+                    if int(iteration) == 0:
+                        break
         psnr_averages = {iteration: np.mean(
             psnrs) for iteration, psnrs in psnr_by_iteration.items()}
 
@@ -682,7 +685,7 @@ def compute_lpips(clean_img, noisy_img, rec_img, args, H_adj, iter='final'):
     lpips_model_path = os.path.expanduser('~/.cache/torch/hub/checkpoints/')
     if not os.path.exists(lpips_model_path) or not any(fname.startswith('alex') for fname in os.listdir(lpips_model_path)):
         print("Downloading LPIPS model for the first time...")
-    loss_fn_alex = lpips.LPIPS(net='alex').to(DEVICE)
+    loss_fn_alex = lpips.LPIPS(net='alex', verbose=False).to(DEVICE)
 
     # Ensure images are in the appropriate range and format for LPIPS calculation
     clean_img = postprocess(clean_img.clone(), args)
@@ -736,9 +739,12 @@ def compute_average_lpips(args):
                 args.save_path_ip, f'lpips_{word}_batch{batch}.txt')
 
             with open(filename, 'r') as f:
-                for line in f:
+                # Only reads the last experiment values
+                for line in list(f)[::-1]:
                     iteration, lpips = map(float, line.strip().split())
                     lpips_by_iteration[int(iteration)].append(lpips)
+                    if int(iteration) == 0:
+                        break
 
         # Calculate the average LPIPS score for each iteration
         lpips_averages = {iteration: np.mean(
@@ -827,9 +833,11 @@ def compute_average_ssim(args):
                 args.save_path_ip, f'ssim_{word}_batch{batch}.txt')
 
             with open(filename, 'r') as f:
-                for line in f:
+                for line in list(f)[::-1]:
                     iteration, ssim = map(float, line.strip().split())
                     ssim_by_iteration[int(iteration)].append(ssim)
+                    if int(iteration) == 0:
+                        break
         ssim_averages = {iteration: np.mean(
             ssims) for iteration, ssims in ssim_by_iteration.items()}
 

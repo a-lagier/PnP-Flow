@@ -1,6 +1,8 @@
 METHOD:
-    steps_pnp: 100
+    steps_pnp: 500
     lr_pnp: 1.0
     gamma_style: 'alpha_1_minus_t'
     num_samples: 5
-    alpha: 1.0
+    alpha: 0.01
+    sub_iter: 1
+    interpolation_mode: 'random'

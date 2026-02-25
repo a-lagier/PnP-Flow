@@ -43,8 +43,21 @@ class PNP_FLOW(object):
         else:
             raise ValueError('Noise type not supported')
 
-    def interpolation_step(self, x, t):
-        return t * x + torch.randn_like(x) * (1 - t)
+    def interpolation_step(self, x, t, eps=None):
+        if self.args.interpolation_mode == 'random':
+            return t * x + torch.randn_like(x) * (1 - t)
+        elif self.args.interpolation_mode == 'zero':
+            return t * x
+        elif self.args.interpolation_mode == 'fixed':
+            return t * x + (1 - t) * eps
+        else:
+            raise ValueError('Interpolation mode unknown')
+
+    def interpolation_step_zero(self, x, t):
+        return t * x
+
+    def interpolation_step_fixed(self, x, t, eps):
+        return t * x + (1 - t) * eps
 
     def denoiser(self, x, t):
         v = self.model_forward(x, t)
@@ -91,6 +104,11 @@ class PNP_FLOW(object):
             # intialize the image with the adjoint operator
             x = H_adj(torch.ones_like(noisy_img)).to(self.device)
 
+            # specific seed for fixed interpolation noise
+            gen = torch.Generator(device="cpu")
+            gen.manual_seed(0)
+            eps = torch.randn(x.shape, generator=gen).to(self.device)
+
             if self.args.compute_time:
                 torch.cuda.synchronize()
                 time_per_batch = 0
@@ -107,17 +125,18 @@ class PNP_FLOW(object):
                         len(x), device=self.device) * delta * iteration
                     lr_t = self.learning_rate_strat(lr, t1)
 
-                    z = x - lr_t * \
-                        self.grad_datafit(x, noisy_img, H, H_adj)
+                    for _ in range(self.args.sub_iter):
+                        z = x - lr_t * \
+                            self.grad_datafit(x, noisy_img, H, H_adj)
 
-                    x_new = torch.zeros_like(x)
-                    for _ in range(num_samples):
-                        z_tilde = self.interpolation_step(
-                            z, t1.view(-1, 1, 1, 1))
-                        x_new += self.denoiser(z_tilde, t1)
+                        x_new = torch.zeros_like(x)
+                        for _ in range(num_samples):
+                            z_tilde = self.interpolation_step(
+                                z, t1.view(-1, 1, 1, 1), eps=eps)
+                            x_new += self.denoiser(z_tilde, t1)
 
-                    x_new /= num_samples
-                    x = x_new
+                        x_new /= num_samples
+                        x = x_new
 
                     if self.args.compute_time:
                         torch.cuda.synchronize()
