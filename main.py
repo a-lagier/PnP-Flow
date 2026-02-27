@@ -17,6 +17,8 @@ from pnpflow.methods.ot_ode import OT_ODE
 from pnpflow.methods.flow_priors import FLOW_PRIORS
 from pnpflow.methods.pnp_gs import PROX_PNP
 from pnpflow.methods.pnp_diff import PNP_DIFF
+from pnpflow.methods.base_denoiser import BASE_DENOISER
+from pnpflow.methods.pnp_score_flow import PNP_SCORE_FLOW
 from pnpflow.utils import gaussian_blur, define_model, load_model
 import warnings
 warnings.filterwarnings("ignore", module="matplotlib\\..*")
@@ -58,7 +60,7 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("device", device)
 
     if args.seed is not None:
@@ -206,6 +208,10 @@ def main():
             method = PROX_PNP(generative_method, device, args)
         elif args.method == 'pnp_diff':
             method = PNP_DIFF(model, device, args)
+        elif args.method == 'base_denoiser':
+            method = BASE_DENOISER(model, device, args)
+        elif args.method == 'pnp_score_flow':
+            method = PNP_SCORE_FLOW(model, device, args)
         else:
             raise ValueError("The method your entered does not exist")
 
