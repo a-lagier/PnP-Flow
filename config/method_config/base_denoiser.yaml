@@ -1,3 +1,4 @@
 METHOD:
-    t: 0.1
+    t: 0.4
+    sub_iter: 50
     noise: 'random'

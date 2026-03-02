@@ -136,7 +136,7 @@ class PNP_SCORE_FLOW(object):
                             grad_update
 
                         #TODO: fix step size
-                        at = 10 * lr_t
+                        at = 2 * lr_t
                         s = torch.zeros_like(x)
                         for _ in range(num_samples):
                             z_tilde = self.interpolation_step(

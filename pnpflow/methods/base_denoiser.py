@@ -50,11 +50,17 @@ class BASE_DENOISER(object):
 
             with torch.no_grad():
                 t1 = self.args.t * torch.ones(len(clean_img), device=self.device)
-                if self.args.noise == 'zero':
-                    noisy_img = t1.view(-1, 1, 1, 1) * clean_img
-                elif self.args.noise == 'random':
-                    noisy_img = t1.view(-1, 1, 1, 1) * clean_img + (1 - t1.view(-1, 1, 1, 1)) * torch.randn_like(clean_img)
-                restored_img = self.denoiser(noisy_img, t1)
+                noisy_img = degradation.H(clean_img.clone().to(self.device))
+                noisy_img += torch.randn_like(noisy_img) * sigma_noise
+                
+                x = noisy_img
+                for _ in range(self.args.sub_iter):
+                    if self.args.noise == 'zero':
+                        z = t1.view(-1, 1, 1, 1) * x
+                    elif self.args.noise == 'random':
+                        z = t1.view(-1, 1, 1, 1) * x + (1 - t1.view(-1, 1, 1, 1)) * torch.randn_like(clean_img)
+                    restored_img = self.denoiser(z, t1)
+                    x = restored_img
 
             if self.args.compute_memory:
                 dict_memory = {}
