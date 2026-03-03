@@ -1,4 +1,8 @@
 METHOD:
-    t: 0.4
+    t: 0.5
+    lr_pnp: 1.0
+    gamma_style: 'alpha_1_minus_t'
+    alpha: 0.01
+    num_samples: 20
     sub_iter: 50
     noise: 'random'

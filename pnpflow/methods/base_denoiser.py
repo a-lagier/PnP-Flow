@@ -25,12 +25,42 @@ class BASE_DENOISER(object):
             v = model_fn(x.type(torch.float), t * 999)
             return v
 
+    def learning_rate_strat(self, lr, t):
+        t = t.view(-1, 1, 1, 1)
+        gamma_styles = {
+            '1_minus_t': lambda lr, t: lr * (1 - t),
+            'sqrt_1_minus_t': lambda lr, t: lr * torch.sqrt(1 - t),
+            'constant': lambda lr, t: lr,
+            'alpha_1_minus_t': lambda lr, t: lr * (1 - t)**self.args.alpha,
+        }
+        return gamma_styles.get(self.args.gamma_style, lambda lr, t: lr)(lr, t)
+
+    def grad_datafit(self, x, y, H, H_adj):
+        if self.args.noise_type == 'gaussian':
+            return H_adj(H(x) - y) / (self.args.sigma_noise**2)
+        elif self.args.noise_type == 'laplace':
+            return H_adj(2*torch.heaviside(H(x)-y, torch.zeros_like(H(x)))-1)/self.args.sigma_noise
+        else:
+            raise ValueError('Noise type not supported')
+
     def denoiser(self, x, t):
         v = self.model_forward(x, t)
         return x + (1 - t.view(-1, 1, 1, 1)) * v
 
     def solve_ip(self, test_loader, degradation, sigma_noise, H_funcs=None):
-        H_adj = lambda x: x
+        H = degradation.H
+        H_adj = degradation.H_adj
+        self.args.sigma_noise = sigma_noise
+        num_samples = self.args.num_samples
+        if self.args.noise_type == 'gaussian':
+            self.args.lr_pnp = sigma_noise**2 * self.args.lr_pnp
+            lr = self.args.lr_pnp
+
+        elif self.args.noise_type == 'laplace':
+            self.args.lr_pnp = sigma_noise * self.args.lr_pnp
+            lr = self.args.lr_pnp
+        else:
+            raise ValueError('Noise type not supported')
 
         loader = iter(test_loader)
         for batch in range(self.args.max_batch):
@@ -50,16 +80,24 @@ class BASE_DENOISER(object):
 
             with torch.no_grad():
                 t1 = self.args.t * torch.ones(len(clean_img), device=self.device)
+                lr_t = self.learning_rate_strat(lr, t1)
+
                 noisy_img = degradation.H(clean_img.clone().to(self.device))
                 noisy_img += torch.randn_like(noisy_img) * sigma_noise
                 
-                x = noisy_img
+                x = torch.zeros_like(clean_img)
                 for _ in range(self.args.sub_iter):
-                    if self.args.noise == 'zero':
-                        z = t1.view(-1, 1, 1, 1) * x
-                    elif self.args.noise == 'random':
-                        z = t1.view(-1, 1, 1, 1) * x + (1 - t1.view(-1, 1, 1, 1)) * torch.randn_like(clean_img)
-                    restored_img = self.denoiser(z, t1)
+                    x = x - lr_t * self.grad_datafit(x, noisy_img, H, H_adj)
+
+                    x_new = torch.zeros_like(x)
+                    for _ in range(num_samples):
+                        if self.args.noise == 'zero':
+                            z = t1.view(-1, 1, 1, 1) * x
+                        elif self.args.noise == 'random':
+                            z = t1.view(-1, 1, 1, 1) * x + (1 - t1.view(-1, 1, 1, 1)) * torch.randn_like(clean_img)
+                        x_new += self.denoiser(z, t1)
+                    
+                    restored_img = x_new / num_samples
                     x = restored_img
 
             if self.args.compute_memory:
