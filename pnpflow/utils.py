@@ -525,22 +525,22 @@ def save_images(clean_img, noisy_img, rec_img, args, H_adj, iter='final'):
                 psnr_rec = PSNR(clean_img[i], rec_img[i], data_range=1.)
 
                 for k, img in enumerate([clean_img, noisy_img, rec_img]):
-
-                    fig = plt.figure()
-                    plt.imshow(img[i])
-                    plt.axis('off')
-                    if k == 0 and args.method == 'pnp_flow':
-                        plt.savefig(os.path.join(args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_im{i}.eps"),
-                                    bbox_inches='tight', pad_inches=0)
-                    if k == 1 and args.method == 'pnp_flow':
-                        plt.savefig(os.path.join(args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_im{i}_pnsr{psnr_noisy:4.2f}.eps"),
-                                    bbox_inches='tight', pad_inches=0)
-                    if k == 2:
-                        print(os.path.join(
-                            args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_im{i}_pnsr{psnr_rec:4.2f}.eps"))
-                        plt.savefig(os.path.join(args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_im{i}_iter{iter}_pnsr{psnr_rec:4.2f}.eps"),
-                                    bbox_inches='tight', pad_inches=0)
-                    plt.close(fig)
+                    pass
+                    # fig = plt.figure()
+                    # plt.imshow(img[i])
+                    # plt.axis('off')
+                    # if k == 0 and args.method == 'pnp_flow':
+                        # plt.savefig(os.path.join(args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_im{i}.eps"),
+                                    # bbox_inches='tight', pad_inches=0)
+                    # if k == 1 and args.method == 'pnp_flow':
+                        # plt.savefig(os.path.join(args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_im{i}_pnsr{psnr_noisy:4.2f}.eps"),
+                                    # bbox_inches='tight', pad_inches=0)
+                    # if k == 2:
+                        # print(os.path.join(
+                            # args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_im{i}_pnsr{psnr_rec:4.2f}.eps"))
+                        # plt.savefig(os.path.join(args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_im{i}_iter{iter}_pnsr{psnr_rec:4.2f}.eps"),
+                                    # bbox_inches='tight', pad_inches=0)
+                    # plt.close(fig)
 
 
 def preprocess(img, args):
