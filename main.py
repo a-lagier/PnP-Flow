@@ -19,6 +19,9 @@ from pnpflow.methods.pnp_gs import PROX_PNP
 from pnpflow.methods.pnp_diff import PNP_DIFF
 from pnpflow.methods.base_denoiser import BASE_DENOISER
 from pnpflow.methods.pnp_score_flow import PNP_SCORE_FLOW
+from pnpflow.methods.fig import FIG
+from pnpflow.methods.oc_flow import OC_FLOW
+from pnpflow.methods.optim_pnp_flow import OPTIM_PNP_FLOW
 from pnpflow.utils import gaussian_blur, define_model, load_model
 import warnings
 warnings.filterwarnings("ignore", module="matplotlib\\..*")
@@ -212,6 +215,12 @@ def main():
             method = BASE_DENOISER(model, device, args)
         elif args.method == 'pnp_score_flow':
             method = PNP_SCORE_FLOW(model, device, args)
+        elif args.method == 'fig':
+            method = FIG(model, device, args)
+        elif args.method == 'oc_flow':
+            method = OC_FLOW(model, device, args)
+        elif args.method == 'optim_pnp_flow':
+            method = OPTIM_PNP_FLOW(model, device, args)
         else:
             raise ValueError("The method your entered does not exist")
 
