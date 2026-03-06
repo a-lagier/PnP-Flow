@@ -1,4 +1,5 @@
 import torch
+from torch.nn.utils import clip_grad_norm_
 import numpy as np
 import os
 from time import perf_counter
@@ -33,23 +34,49 @@ class OC_FLOW(object):
         else:
             raise ValueError('Noise type not supported')
     
+    def solve_ode(self, f, x_init, timesteps):
+        x = x_init
+        dt = 1. / len(timesteps)
+        for iteration, t in enumerate(timesteps):
+            x += f(x, t) * dt
+        return x
+    
+    def loss_fn(self, x0, thetas, timesteps, y, H, H_adj):
+        # regularized l2 loss
+        norm2 = torch.zeros(x0.size(0), device=self.device, dtype=torch.float)
+        new_x0 = x0 + thetas[0]
+        x1 = self.solve_ode(lambda x, t: self.model_forward(x, t.expand(len(x))) + thetas[int(t * len(timesteps))], new_x0, timesteps)
+        norm2 = self.solve_ode(lambda x, t: (thetas[int(t * len(timesteps))] ** 2).sum([-3, -2, -1]), norm2, timesteps)
+        return self.grad_datafit(x1, y, H, H_adj) - self.args.gamma * norm2 / 2
+
+    def closure(self, optimizer, x0, theta, timesteps, y, H, H_adj):
+        optimizer.zero_grad()
+        loss = self.loss_fn(x0, theta, timesteps, y, H, H_adj)
+        loss.backward()
+        clip_grad_norm_([theta], self.max_grad_norm) #TODO: define max_grad_norm
+        
+        self.cnt += 1
+        print(f'Iter {self.cnt}: Loss {loss.item():.4f}')
+        return loss
+
+
     def solve_ip(self, test_loader, degradation, sigma_noise, H_funcs=None):
         torch.cuda.empty_cache()
         device = self.device
         self.args.sigma_noise = sigma_noise
-        max_steps = self.args.max_steps
+        max_iter = self.args.max_iter
         ode_steps = self.args.ode_steps
         optim = self.args.optim
         max_optim_iter = self.args.max_optim_iter
         lr = self.args.lr
         H = degradation.H
         H_adj = degradation.H_adj
+        self.cnt = 0
 
         loader = iter(test_loader)
         for batch in range(self.args.max_batch):
             (clean_img, labels) = next(loader)
             self.args.batch = batch
-
 
             if self.args.noise_type == 'gaussian':
                 noisy_img = H(clean_img.clone().to(self.device))
@@ -57,27 +84,28 @@ class OC_FLOW(object):
                 noisy_img += torch.randn_like(noisy_img) * sigma_noise
             elif self.args.noise_type == 'laplace':
                 pass
-        
+
             clean_img = clean_img.to('cpu')
 
-            x_0 = torch.randn_like(clean_img).to(self.device)
-            x = x_0
-                
+            x = torch.randn_like(clean_img).to(self.device)
+            thetas = torch.randn(ode_steps + 1, *clean_img.shape).to(self.device)
+            thetas.requires_grad_(True)
             timesteps = torch.linspace(0, 1, ode_steps + 1, device=device, dtype=torch.float)
-            if optim == 'sgd':
-                optimizer = torch.optim.SGD([du], lr=lr)
-            else:
-                optimizer = torch.optim.LBFGS([du], max_iter=max_optim_iter, lr=lr, line_search_fn='strong_wolfe')
-                
-            for step in range(max_steps):
-                loss = optimizer.step(closure)
-                print(f'Step {step}: Loss {loss:.4f}')
 
-            du = du.detach()
+            if optim == 'sgd':
+                optimizer = torch.optim.SGD([thetas], lr=lr)
+            else:
+                optimizer = torch.optim.LBFGS([thetas], max_iter=max_optim_iter, lr=lr, line_search_fn='strong_wolfe')
+                
+            for itr in range(max_iter):
+                loss = optimizer.step(self.closure(optimizer, x, thetas, timesteps, noisy_img, H, H_adj))
+                print(f'Step {itr}: Loss {loss:.4f}')
+
+            thetas = thetas.detach()
             with torch.no_grad():
-                x1_opt = odeint(
-                    (lambda t, x: self.model_forward(x, t) + du[int(t * ode_steps)]),
-                    x_0 + du[-1]
+                x1_opt = self.solve_ode(
+                    (lambda x, t: self.model_forward(x, t.expand(len(x))) + thetas[int(t * ode_steps)]),
+                    x + thetas[0]
                 ).detach()
 
             restored_img = x1_opt
@@ -88,11 +116,11 @@ class OC_FLOW(object):
                 utils.save_images(clean_img, noisy_img, restored_img,
                                   self.args, H_adj, iter='final')
                 utils.compute_psnr(clean_img, noisy_img,
-                                   restored_img, self.args, H_adj, iter=max_steps)
+                                   restored_img, self.args, H_adj, iter=max_iter)
                 utils.compute_ssim(
-                    clean_img, noisy_img, restored_img, self.args, H_adj, iter=max_steps)
+                    clean_img, noisy_img, restored_img, self.args, H_adj, iter=max_iter)
                 utils.compute_lpips(clean_img, noisy_img,
-                                    restored_img, self.args, H_adj, iter=max_steps)
+                                    restored_img, self.args, H_adj, iter=max_iter)
 
         if self.args.save_results:
             utils.compute_average_psnr(self.args)

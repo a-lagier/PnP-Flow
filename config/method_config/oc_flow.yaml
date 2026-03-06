@@ -1,2 +1,7 @@
 METHOD:
   max_iter: 100
+  ode_steps: 100
+  max_grad_norm: 5e3
+  gamma: 1.0
+  optim: sgd
+  max_optim_iter: 10
