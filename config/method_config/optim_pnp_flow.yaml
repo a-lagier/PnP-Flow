@@ -1,8 +1,9 @@
 METHOD:
     max_iter: 100
-    base_steps_pnp: 100
+    base_steps_pnp: 50
     lr_pnp: 1.0
     gamma_style: 'alpha_1_minus_t'
     num_samples: 5
-    alpha: 0.01
+    alpha: 0.5
+    beta: 0.4
     interpolation_mode: 'random'
