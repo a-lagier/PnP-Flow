@@ -1,11 +1,31 @@
 import torch
 from torch.nn.utils import clip_grad_norm_
+from torchdiffeq import odeint_adjoint as odeint
 import numpy as np
 import os
 from time import perf_counter
 import pnpflow.image_generation.models.utils as mutils
 import pnpflow.utils as utils
 
+#TODO: only works with 'ot' unconditional model type
+class ConditionalVectorField(torch.nn.Module):
+    def __init__(self, unconditional_vf, thetas):
+        super().__init__()
+        self.unc_vf = unconditional_vf
+        self.thetas = thetas
+        self.ode_steps = len(thetas)
+    
+    def forward(self, t, x):
+        return self.unc_vf(x, t.expand(len(x))) + self.thetas[int(t * self.ode_steps)]
+
+class RegularizationField(torch.nn.Module):
+    def __init__(self, thetas):
+        super().__init__()
+        self.thetas = thetas
+        self.ode_steps = len(thetas)
+    
+    def forward(self, t, x):
+        return (self.thetas[int(t * self.ode_steps)] ** 2).sum([-3, -2, -1])
 
 
 class OC_FLOW(object):
@@ -26,6 +46,14 @@ class OC_FLOW(object):
             v = model_fn(x.type(torch.float), t * 999)
             return v
 
+    def datafit(self, x, y, H, H_adj):
+        if self.args.noise_type == 'gaussian':
+            return ((H(x) - y) ** 2).sum([-3, -2, -1]) / (self.args.sigma_noise ** 2)
+        elif self.args.noise_type == 'laplace':
+            return ((H(x) - y) ** 2).sum([-3, -2, -1]) / self.args.sigma_noise
+        else:
+            raise ValueError('Noise type not supported')
+
     def grad_datafit(self, x, y, H, H_adj):
         if self.args.noise_type == 'gaussian':
             return H_adj(H(x) - y) / (self.args.sigma_noise**2)
@@ -37,28 +65,26 @@ class OC_FLOW(object):
     def solve_ode(self, f, x_init, timesteps):
         x = x_init
         dt = 1. / len(timesteps)
-        for iteration, t in enumerate(timesteps):
-            x += f(x, t) * dt
+        for iteration, t in enumerate(timesteps[:-1]):
+            x = x + f(x, t) * dt
         return x
     
     def loss_fn(self, x0, thetas, timesteps, y, H, H_adj):
         # regularized l2 loss
-        norm2 = torch.zeros(x0.size(0), device=self.device, dtype=torch.float)
-        new_x0 = x0 + thetas[0]
-        x1 = self.solve_ode(lambda x, t: self.model_forward(x, t.expand(len(x))) + thetas[int(t * len(timesteps))], new_x0, timesteps)
-        norm2 = self.solve_ode(lambda x, t: (thetas[int(t * len(timesteps))] ** 2).sum([-3, -2, -1]), norm2, timesteps)
-        return self.grad_datafit(x1, y, H, H_adj) - self.args.gamma * norm2 / 2
-
-    def closure(self, optimizer, x0, theta, timesteps, y, H, H_adj):
-        optimizer.zero_grad()
-        loss = self.loss_fn(x0, theta, timesteps, y, H, H_adj)
-        loss.backward()
-        clip_grad_norm_([theta], self.max_grad_norm) #TODO: define max_grad_norm
         
-        self.cnt += 1
-        print(f'Iter {self.cnt}: Loss {loss.item():.4f}')
-        return loss
+        # initialize
+        norm2 = torch.zeros(x0.size(0), device=self.device, dtype=torch.float)
+        new_x0 = x0 + thetas[-1]
 
+        # run ode twice (one for datafit loss, one for regularization loss)
+        x1 = odeint(self.conditional_vector_field, new_x0, timesteps[:-1], method='euler', adjoint_params=self.reg.parameters())[-1]
+        norm2 = odeint(self.reg, norm2, timesteps[:-1], method='euler', adjoint_params=self.reg.parameters())[-1]
+        
+        batch_loss = self.datafit(x1, y, H, H_adj) + self.args.gamma * norm2 / 2
+        
+        # optional latent save
+        utils.save_images(0*x1, 0*x1, x1, self.args, H_adj, iter=self.cnt)
+        return batch_loss.mean()
 
     def solve_ip(self, test_loader, degradation, sigma_noise, H_funcs=None):
         torch.cuda.empty_cache()
@@ -68,7 +94,7 @@ class OC_FLOW(object):
         ode_steps = self.args.ode_steps
         optim = self.args.optim
         max_optim_iter = self.args.max_optim_iter
-        lr = self.args.lr
+        lr = self.args.optim_lr
         H = degradation.H
         H_adj = degradation.H_adj
         self.cnt = 0
@@ -92,35 +118,49 @@ class OC_FLOW(object):
             thetas.requires_grad_(True)
             timesteps = torch.linspace(0, 1, ode_steps + 1, device=device, dtype=torch.float)
 
+            self.conditional_vector_field = ConditionalVectorField(self.model, thetas)
+            self.reg = RegularizationField(thetas)
+
             if optim == 'sgd':
                 optimizer = torch.optim.SGD([thetas], lr=lr)
             else:
                 optimizer = torch.optim.LBFGS([thetas], max_iter=max_optim_iter, lr=lr, line_search_fn='strong_wolfe')
                 
+            def closure():
+                optimizer.zero_grad()
+                loss = self.loss_fn(x, thetas, timesteps, noisy_img, H, H_adj)
+                loss.backward()
+                clip_grad_norm_([thetas], self.args.max_grad_norm)
+            
+                self.cnt += 1
+                print(f'Iter {self.cnt}: Loss {loss.item():.4f}')
+                return loss
+
             for itr in range(max_iter):
-                loss = optimizer.step(self.closure(optimizer, x, thetas, timesteps, noisy_img, H, H_adj))
+                loss = optimizer.step(closure)
                 print(f'Step {itr}: Loss {loss:.4f}')
 
             thetas = thetas.detach()
             with torch.no_grad():
-                x1_opt = self.solve_ode(
-                    (lambda x, t: self.model_forward(x, t.expand(len(x))) + thetas[int(t * ode_steps)]),
-                    x + thetas[0]
-                ).detach()
+                # replace with torchdiffeq ?
+                x1_opt = odeint(self.conditional_vector_field, x + thetas[-1], timesteps, method='euler')
+                # x1_opt = self.solve_ode(
+                #     (lambda x, t: self.model_forward(x, t.expand(len(x))) + thetas[int(t * len(timesteps))]),
+                #     x + thetas[-1],
+                #     timesteps
+                # ).detach()
 
-            restored_img = x1_opt
 
-
-            if self.args.save_results:
-                restored_img = x.detach().clone()
-                utils.save_images(clean_img, noisy_img, restored_img,
-                                  self.args, H_adj, iter='final')
-                utils.compute_psnr(clean_img, noisy_img,
-                                   restored_img, self.args, H_adj, iter=max_iter)
-                utils.compute_ssim(
-                    clean_img, noisy_img, restored_img, self.args, H_adj, iter=max_iter)
-                utils.compute_lpips(clean_img, noisy_img,
+                if self.args.save_results:
+                    restored_img = x1_opt.detach().clone()
+                    utils.save_images(clean_img, noisy_img, restored_img,
+                                    self.args, H_adj, iter='final')
+                    utils.compute_psnr(clean_img, noisy_img,
                                     restored_img, self.args, H_adj, iter=max_iter)
+                    utils.compute_ssim(
+                        clean_img, noisy_img, restored_img, self.args, H_adj, iter=max_iter)
+                    utils.compute_lpips(clean_img, noisy_img,
+                                        restored_img, self.args, H_adj, iter=max_iter)
 
         if self.args.save_results:
             utils.compute_average_psnr(self.args)
