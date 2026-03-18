@@ -7,7 +7,7 @@ import pnpflow.image_generation.models.utils as mutils
 import pnpflow.utils as utils
 
 
-class OPTIM_PNP_FLOW(object):
+class SAMPLING_PNP_FLOW(object):
 
     def __init__(self, model, device, args):
         self.device = device
@@ -35,13 +35,6 @@ class OPTIM_PNP_FLOW(object):
         }
         return gamma_styles.get(self.args.gamma_style, lambda lr, t: lr)(lr, t)
 
-    def time_scheduling(self, k, max_iter):
-        # def s(x):
-        #     return 1. / (1. + np.exp(-x))
-        # return s(self.args.beta * (k / max_iter - 0.5))
-        return 1 - 1 / (k + 1) ** self.args.beta
-
-
     def grad_datafit(self, x, y, H, H_adj):
         if self.args.noise_type == 'gaussian':
             return H_adj(H(x) - y) / (self.args.sigma_noise**2)
@@ -62,16 +55,6 @@ class OPTIM_PNP_FLOW(object):
 
         return x
 
-    def solve_ode(self, x, t_start, steps):
-        delta = 1. / steps
-
-        with torch.no_grad():
-            for i in range(t_start, steps):
-                t1 = torch.ones(len(x), device=self.device) * delta * i
-                x = x + delta * self.model_forward(x, t1)
-        return x
-
-
     def interpolation_step(self, x, t, eps=None):
         if self.args.interpolation_mode == 'random':
             return t * x + torch.randn_like(x) * (1 - t)
@@ -90,8 +73,7 @@ class OPTIM_PNP_FLOW(object):
         H = degradation.H
         H_adj = degradation.H_adj
         self.args.sigma_noise = sigma_noise
-        num_samples = self.args.num_samples
-        # steps, delta = self.args.steps_pnp, 1 / self.args.steps_pnp
+        steps, delta = self.args.steps_pnp, 1 / self.args.steps_pnp
         if self.args.noise_type == 'gaussian':
             self.args.lr_pnp = sigma_noise**2 * self.args.lr_pnp
             lr = self.args.lr_pnp
@@ -124,8 +106,16 @@ class OPTIM_PNP_FLOW(object):
             noisy_img, clean_img = noisy_img.to(
                 self.device), clean_img.to('cpu')
 
-            # intialize the image with the adjoint operator
-            x = H_adj(torch.ones_like(noisy_img)).to(self.device)
+            # specific seed for fixed interpolation noise
+            gen = torch.Generator(device="cpu")
+            gen.manual_seed(0)
+
+            # get backward of H^{-1}y
+            # eps = torch.randn(x.shape, generator=gen).to(self.device)
+            # x = self.get_backward(noisy_img, H_adj).to(self.device)#.clip(0.0, 1.0)
+            x = torch.randn_like(clean_img).to(self.device)
+            # utils.save_images(clean_img, noisy_img, x.clone(),
+            #       self.args, H_adj, iter=-1)
 
             if self.args.compute_time:
                 torch.cuda.synchronize()
@@ -135,64 +125,41 @@ class OPTIM_PNP_FLOW(object):
                 torch.cuda.reset_max_memory_allocated(self.device)
 
             with torch.no_grad():
-                max_iter = self.args.max_iter
-                for k in range(max_iter):
+                for count, iteration in enumerate(range(int(steps))):
                     if self.args.compute_time:
                         time_counter_1 = perf_counter()
 
-                    steps = self.args.base_steps_pnp # * int((k + 1) ** (1))
-                    t_start = int(self.time_scheduling(k, max_iter) * steps)
-                    delta = 1 / steps
+                    t1 = torch.ones(
+                        len(x), device=self.device) * delta * iteration
+                    lr_t = self.learning_rate_strat(lr, t1)
 
-                    lr_k = 1 / (k + 1) ** self.args.alpha / 200
-                    print(k, t_start, steps, lr_k)
-                    # lr_k = self.learning_rate_strat(1.0, self.time_scheduling(k, max_iter) * torch.ones(len(x), device=self.device))
-                    # lr_k = 1. / 100
-                    x = x - lr_k * self.grad_datafit(x, noisy_img, H, H_adj)
+                    # for _ in range(self.args.sub_iter):
+                    alpha = delta / (1 - t1.view(-1, 1, 1, 1))
+                    z = self.denoiser(x, t1)
+                    z_tilde = z - lr_t * \
+                        self.grad_datafit(z, noisy_img, H, H_adj)
+                    x = (1. - alpha) * x + alpha * z_tilde
 
-                    utils.save_images(clean_img, noisy_img, x.clone(),
-                            self.args, H_adj, iter=f'_grad_{k}')
-
-
-                    x_new = torch.zeros_like(x)
-                    for _ in range(num_samples):
-                        z = self.interpolation_step(x, (t_start / steps) * torch.ones((len(x), 1, 1, 1), device=self.device))
-                        x_new += self.solve_ode(z, t_start, steps)#.clip(0.0, 1.0)
-                    x_new /= num_samples
-                    x = x_new
-                    # for count, iteration in enumerate(range(t_start, steps)):
-                    #     t1 = torch.ones(
-                    #         len(x), device=self.device) * delta * iteration
-                        
-                    #     x_new = torch.zeros_like(x)
-                    #     for _ in range(num_samples):
-                    #         z_tilde = self.interpolation_step(
-                    #             x, t1.view(-1, 1, 1, 1))
-                    #         x_new += self.denoiser(z_tilde, t1)
-
-                    #     x_new /= num_samples
-                    #     x = x_new
-                    
-                    #     restored_img = x.detach().clone()
-                    #     if iteration == t_start or iteration == steps - 1:
-                    #         utils.save_images(clean_img, noisy_img, restored_img,
-                    #         self.args, H_adj, iter=f'_latent_{k}_{iteration}')
-
-                    if self.args.save_results:
-                        restored_img = x.detach().clone()
-                        utils.save_images(clean_img, noisy_img, restored_img,
-                                    self.args, H_adj, iter=k)
-                        utils.compute_psnr(clean_img, noisy_img,
-                                                restored_img, self.args, H_adj, iter=k)
-                        utils.compute_ssim(
-                                    clean_img, noisy_img, restored_img, self.args, H_adj, iter=k)
-                        utils.compute_lpips(clean_img, noisy_img,
-                                                    restored_img, self.args, H_adj, iter=k)
+                    # utils.save_images(clean_img, noisy_img, x,
+                    #     self.args, H_adj, iter=iteration)
 
                     if self.args.compute_time:
                         torch.cuda.synchronize()
                         time_counter_2 = perf_counter()
                         time_per_batch += time_counter_2 - time_counter_1
+
+                    if self.args.save_results:
+                        if iteration % 50 == 0 or self.should_save_image(iteration, steps):
+
+                            restored_img = x.detach().clone()
+                            # utils.save_images(
+                            #     clean_img, noisy_img, restored_img, self.args, H_adj, iter=iteration)
+                            utils.compute_psnr(clean_img, noisy_img,
+                                               restored_img, self.args, H_adj, iter=iteration)
+                            utils.compute_ssim(
+                                clean_img, noisy_img, restored_img, self.args, H_adj, iter=iteration)
+                            utils.compute_lpips(clean_img, noisy_img,
+                                                restored_img, self.args, H_adj, iter=iteration)
             
             if self.args.compute_memory:
                 dict_memory = {}
@@ -212,11 +179,11 @@ class OPTIM_PNP_FLOW(object):
                 utils.save_images(clean_img, noisy_img, restored_img,
                                   self.args, H_adj, iter='final')
                 utils.compute_psnr(clean_img, noisy_img,
-                                   restored_img, self.args, H_adj, iter=k)
+                                   restored_img, self.args, H_adj, iter=iteration)
                 utils.compute_ssim(
-                    clean_img, noisy_img, restored_img, self.args, H_adj, iter=k)
+                    clean_img, noisy_img, restored_img, self.args, H_adj, iter=iteration)
                 utils.compute_lpips(clean_img, noisy_img,
-                                    restored_img, self.args, H_adj, iter=k)
+                                    restored_img, self.args, H_adj, iter=iteration)
 
         if self.args.save_results:
             utils.compute_average_psnr(self.args)

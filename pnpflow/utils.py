@@ -474,7 +474,7 @@ def save_images(clean_img, noisy_img, rec_img, args, H_adj, iter='final'):
                 ax_.set_yticks([])
 
         plt.savefig(os.path.join(args.save_path_ip,
-                    f"{args.problem}_{args.method}_batch{args.batch}_iter{iter}.png")),
+                    f"{args.problem}_{args.method}_batch{args.batch}_iter{iter}.png"), bbox_inches='tight', pad_inches=0)
         plt.close(fig)
 
     list_word = ['clean', 'noisy', args.method]
@@ -503,7 +503,7 @@ def save_images(clean_img, noisy_img, rec_img, args, H_adj, iter='final'):
                     ax_.set_yticks([])
 
             plt.savefig(os.path.join(
-                args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_final.png")),
+                args.save_path_ip, f"{args.problem}_{list_word[k]}_batch{args.batch}_final.png"), bbox_inches='tight', pad_inches=0)
             plt.close(fig)
 
     # save images one by one, in .eps, adding the name of the method (args.method) and the PSNR value to the path

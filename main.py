@@ -22,6 +22,7 @@ from pnpflow.methods.pnp_score_flow import PNP_SCORE_FLOW
 from pnpflow.methods.fig import FIG
 from pnpflow.methods.oc_flow import OC_FLOW
 from pnpflow.methods.optim_pnp_flow import OPTIM_PNP_FLOW
+from pnpflow.methods.sampling_pnp_flow import SAMPLING_PNP_FLOW
 from pnpflow.utils import gaussian_blur, define_model, load_model
 import warnings
 warnings.filterwarnings("ignore", module="matplotlib\\..*")
@@ -63,7 +64,7 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("device", device)
 
     if args.seed is not None:
@@ -221,6 +222,8 @@ def main():
             method = OC_FLOW(model, device, args)
         elif args.method == 'optim_pnp_flow':
             method = OPTIM_PNP_FLOW(model, device, args)
+        elif args.method == 'sampling_pnp_flow':
+            method = SAMPLING_PNP_FLOW(model, device, args)
         else:
             raise ValueError("The method your entered does not exist")
 
