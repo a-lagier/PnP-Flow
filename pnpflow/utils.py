@@ -14,6 +14,7 @@ import scipy
 import scipy.linalg
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from pnpflow.standalone_unet import create_unet_afhq256, create_unet_lodopab128
 import torchvision.transforms as v2
 import argparse
 from torchmetrics.functional.image import peak_signal_noise_ratio as PSNR
@@ -169,14 +170,19 @@ def merge_cfg_from_list(cfg: CfgNode,
 
 def define_model(args):
     if args.model == "ot" or args.model == "gradient_step":
-        model = UNet(input_channels=args.num_channels,
-                     input_height=args.dim_image,
-                     ch=32,
-                     ch_mult=(1, 2, 4, 8),
-                     num_res_blocks=6,
-                     attn_resolutions=(16, 8),
-                     resamp_with_conv=True,
-                     )
+        if args.dataset == "lodopab":
+            model = create_unet_lodopab128(use_residual=True)
+        if args.dataset == "afhq":
+            model = create_unet_afhq256(use_residual=True)
+        else:
+            model = UNet(input_channels=args.num_channels,
+                        input_height=args.dim_image,
+                        ch=32,
+                        ch_mult=(1, 2, 4, 8),
+                        num_res_blocks=6,
+                        attn_resolutions=(16, 8),
+                        resamp_with_conv=True,
+                        )
         return (model, None)
 
     elif args.model == "diffusion":
@@ -1164,3 +1170,101 @@ def create_downsampling_matrix(H, W, sf, device):
             downsample_matrix[downsampled_idx, original_idx] = 1
 
     return downsample_matrix
+
+"""
+Continuous-normalizing-flow log-likelihood via the instantaneous change-of-
+variables formula (FFJORD-style), using a Hutchinson trace estimator and
+adaptive ODE integration (torchdiffeq).
+
+Extracted to standalone, module-level functions/classes so nothing gets
+redefined on every call -- safe to call `compute_log_likelihood` once per
+iteration of an outer loop without re-JITing/re-allocating class definitions
+each time.
+
+Key efficiency fix vs. the original nested version: the original recomputed
+`model(x, t)` once per Hutchinson probe (inside `hutchinson`) *plus once more*
+outside it (in `AugmentedDynamics.forward`, to get `v`). That's
+`n_samples + 1` forward passes per single ODE function evaluation, when only
+1 is needed -- `v` doesn't depend on the probe `eps`, so it can be computed
+once and reused via `retain_graph=True` across all probes. Since `odeint`
+calls this function many times per solve (and you're solving once per outer
+iteration), this cuts the dominant cost by roughly (n_samples + 1)x.
+"""
+
+from typing import Sequence
+
+import torch
+from torchdiffeq import odeint
+
+
+def hutchinson_trace(model, x, t, n_samples: int = 3):
+    """
+    Estimates tr(dv/dx) for v = model(x, t) via n_samples Rademacher probes.
+
+    v = model(x, t) is computed exactly ONCE and reused across all probes
+    (via retain_graph), instead of being recomputed per probe.
+
+    Returns
+    -------
+    v : torch.Tensor, same shape as x.
+    trace_est : torch.Tensor, shape (batch,).
+    """
+    out = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+
+    v = model(x, t)
+    for i in range(n_samples):
+        eps = torch.randint(0, 2, x.shape, device=x.device, dtype=x.dtype) * 2 - 1
+        vprod = torch.sum(v * eps)
+        grad = torch.autograd.grad(vprod, x, retain_graph=(i < n_samples - 1))[0]
+        out += torch.sum(grad * eps, dim=list(range(1, x.dim())))
+
+    return v, out / n_samples
+
+
+class AugmentedDynamics(torch.nn.Module):
+    def __init__(self, model, n_hutchinson_samples=3):
+        super().__init__()
+        self.model = model
+        self.n_samples = n_hutchinson_samples
+
+    def forward(self, t, state):
+        x, logp = state
+        t_vec = torch.ones(x.shape[0], device=x.device, dtype=x.dtype) * t
+
+        with torch.enable_grad():
+            x = x.detach().requires_grad_(True)
+            v, trace_est = hutchinson_trace(self.model, x, t_vec, n_samples=self.n_samples)
+
+        return v.detach(), (-trace_est).detach()
+
+
+@torch.no_grad()
+def compute_log_likelihood(
+    model,
+    x1,
+    n_hutchinson_samples=3,
+    t_span=(1.0, 0.0),
+    method="dopri5",
+    atol=1e-4,
+    rtol=1e-4,
+):
+    B = x1.shape[0]
+    D = x1[0].numel()
+
+    dynamics = AugmentedDynamics(model, n_hutchinson_samples)
+
+    logp0 = torch.zeros(B, device=x1.device, dtype=x1.dtype)
+    t_span_t = torch.tensor(t_span, device=x1.device, dtype=x1.dtype)
+
+    x0, delta_logp = odeint(
+        dynamics, (x1, logp0), t_span_t,
+        method=method, atol=atol, rtol=rtol,
+    )
+
+    x0 = x0[-1]
+    delta_logp = delta_logp[-1]
+
+    log_p0 = -0.5 * D * torch.log(torch.tensor(2 * torch.pi, device=x1.device, dtype=x1.dtype)) \
+             - 0.5 * torch.sum(x0.view(B, -1) ** 2, dim=1)
+
+    return log_p0 + delta_logp

@@ -1,6 +1,7 @@
 import torch
 import torchvision
 import torchvision.transforms as v2
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets
 from PIL import Image
@@ -75,11 +76,12 @@ class DataLoaders:
                 shuffle=True,
                 collate_fn=custom_collate)
 
-        elif self.dataset_name == 'afhq_cat':
+        elif self.dataset_name == 'afhq_cat' or self.dataset_name == 'afhq':
             # transform should include a linear transform 2x - 1
             transform = v2.Compose([
                 v2.Resize((256, 256)),
                 v2.ToTensor(),
+                # v2.ToDtype(torch.float32, scale=True),
                 v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
             ])
 
@@ -96,7 +98,34 @@ class DataLoaders:
             test_loader = DataLoader(
                 test_dataset,
                 batch_size=self.batch_size_test,
-                shuffle=True,
+                shuffle=False,
+                collate_fn=custom_collate)
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=self.batch_size_test,
+                shuffle=False,
+                collate_fn=custom_collate)
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.batch_size_train,
+                shuffle=False,
+                collate_fn=custom_collate, drop_last=True)
+
+        elif self.dataset_name == 'lodopab':
+
+            img_dir_test = 'data/lodopab/test/'
+            img_dir_val = 'data/lodopab/val/'
+            img_dir_train = 'data/lodopab/train/'
+            test_dataset = LoDoPaBDataset(
+                img_dir_test, batchsize=self.batch_size_test, transform=None)
+            val_dataset = LoDoPaBDataset(
+                img_dir_val, batchsize=self.batch_size_test, transform=None)
+            train_dataset = LoDoPaBDataset(
+                img_dir_train, batchsize=self.batch_size_test, transform=None)
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=self.batch_size_test,
+                shuffle=False,
                 collate_fn=custom_collate)
             val_loader = DataLoader(
                 val_dataset,
@@ -208,6 +237,42 @@ class AFHQDataset(Dataset):
             image = self.transform(image)
 
         return image, 0
+
+class LoDoPaBDataset(Dataset):
+    """LoDoPaB dataset."""
+
+    def __init__(self, img_dir, batchsize, transform=None):
+        self.files = sorted(os.listdir(img_dir))
+        self.num_imgs = len(self.files)
+        self.batchsize = batchsize
+        self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self):
+        return self.num_imgs
+
+    def __getitem__(self, idx):
+        img_name = self.files[idx]
+        img_path = os.path.join(self.img_dir, img_name)
+
+        if not os.path.exists(img_path):
+            warnings.warn(f"File not found: {img_path}. Skipping.")
+            return None, None
+
+        image = Image.open(img_path).convert('RGB')
+
+        image = torch.as_tensor(image, dtype=torch.float32)[None, None]
+        image = F.interpolate(
+            image,
+            size=(128, 128),
+            mode="bilinear",
+            align_corners=False,
+            antialias=True,
+        )
+        image_model = 2 * image.clamp(0, 1) - 1
+
+
+        return image_model, 0
 
 
 def custom_collate(batch):

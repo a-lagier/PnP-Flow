@@ -128,7 +128,7 @@ def main():
             if args.noise_type == 'laplace':
                 sigma_noise = 0.3
             elif args.noise_type == 'gaussian':
-                sigma_noise = 0.01 #!! change
+                sigma_noise = 0.2 #!! change
             degradation = Denoising()
 
         elif args.problem == "inpainting":

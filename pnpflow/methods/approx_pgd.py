@@ -161,34 +161,23 @@ class APPROX_PGD(object):
 
                     x_ref = x.clone()
                     steps = self.inner_steps(k, eta)
-                    if steps > 1:
-                        for iteration in range(int(steps)):
-                            if self.args.compute_time:
-                                time_counter_1 = perf_counter()
-
-                            t, sigma, alpha = self.get_schedule(iteration, int(steps), sigma_noise)
-                            print(f'{t:.6f}, {sigma:.6f}, {alpha:.6f}')
-
-                            t1 = torch.ones(len(x), device=self.device) * t
-                            
-                            x = (1 - alpha) * self.mmse(x, t1) + alpha * x_ref
-                            if self.args.save_results:
-                                restored_img = x.detach().clone()
-                                utils.compute_psnr(clean_img, noisy_img,
-                                                restored_img, self.args, H_adj, iter=iteration)
-                                utils.compute_ssim(
-                                    clean_img, noisy_img, restored_img, self.args, H_adj, iter=iteration)
-                                if self.should_save_image(iteration, steps):
-                                    utils.save_images(clean_img, noisy_img, restored_img,
-                                            self.args, H_adj, iter=iteration)
-
-                    else:
-                        sigma_k = np.sqrt(tau / (k + 2))
-                        alpha_k = 1 / (k + 3)
-                        t_k = 1 / (1 + sigma_k)
-                        t1 = torch.ones(len(x), device=self.device) * t_k
-
-                        x = (1 - alpha_k) * self.mmse(x, t1) + alpha_k * x_ref
+                    for iteration in range(int(steps)):
+                        if self.args.compute_time:
+                            time_counter_1 = perf_counter()
+                        t, sigma, alpha = self.get_schedule(iteration, int(steps), sigma_noise)
+                        print(f'{t:.6f}, {sigma:.6f}, {alpha:.6f}')
+                        t1 = torch.ones(len(x), device=self.device) * t
+                        
+                        x = (1 - alpha) * self.mmse(x, t1) + alpha * x_ref
+                        if self.args.save_results:
+                            restored_img = x.detach().clone()
+                            utils.compute_psnr(clean_img, noisy_img,
+                                            restored_img, self.args, H_adj, iter=iteration)
+                            utils.compute_ssim(
+                                clean_img, noisy_img, restored_img, self.args, H_adj, iter=iteration)
+                            if self.should_save_image(iteration, steps):
+                                utils.save_images(clean_img, noisy_img, restored_img,
+                                        self.args, H_adj, iter=iteration)
 
                     if self.args.save_results:
                         restored_img = x.detach().clone()
