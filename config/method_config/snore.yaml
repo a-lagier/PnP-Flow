@@ -1,0 +1,11 @@
+METHOD:
+    max_iter: 1500
+    m: 16
+    gamma: 0.1
+    sigma_0: 0.196
+    alpha_0: 0.15 
+    sigma_last: 0.0196
+    alpha_last: 0.4
+    use_sigma_noise: True
+
+
